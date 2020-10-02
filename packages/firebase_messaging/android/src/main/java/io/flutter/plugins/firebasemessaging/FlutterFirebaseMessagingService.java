@@ -10,6 +10,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.Process;
 import android.util.Log;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
@@ -87,26 +88,33 @@ public class FlutterFirebaseMessagingService extends FirebaseMessagingService {
   public void onMessageReceived(final RemoteMessage remoteMessage) {
     // If application is running in the foreground use local broadcast to handle message.
     // Otherwise use the background isolate to handle message.
+    final Context ctx = this;
     if (isApplicationForeground(this)) {
-      Intent intent = new Intent(ACTION_REMOTE_MESSAGE);
-      intent.putExtra(EXTRA_REMOTE_MESSAGE, remoteMessage);
-      LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+      if (isInComingCallNotification(remoteMessage)){
+        handleIncomingCallNotification(ctx, remoteMessage);
+      }else{
+        sendRemoteMessage(ctx, remoteMessage);
+      }
     } else {
       // If background isolate is not running yet, put message in queue and it will be handled
       // when the isolate starts.
+      if (isInComingCallNotification(remoteMessage)){
+        handleIncomingCallNotification(ctx, remoteMessage);
+        return;
+      }
       if (!isIsolateRunning.get()) {
         backgroundMessageQueue.add(remoteMessage);
       } else {
         final CountDownLatch latch = new CountDownLatch(1);
         new Handler(getMainLooper())
-            .post(
-                new Runnable() {
-                  @Override
-                  public void run() {
-                    executeDartCallbackInBackgroundIsolate(
-                        FlutterFirebaseMessagingService.this, remoteMessage, latch);
-                  }
-                });
+          .post(
+            new Runnable() {
+              @Override
+              public void run() {
+                executeDartCallbackInBackgroundIsolate(
+                  FlutterFirebaseMessagingService.this, remoteMessage, latch);
+              }
+            });
         try {
           latch.await();
         } catch (InterruptedException ex) {
@@ -328,5 +336,43 @@ public class FlutterFirebaseMessagingService extends FirebaseMessagingService {
       }
     }
     return false;
+  }
+
+  private void handleIncomingCallNotification(final Context ctx, final RemoteMessage remoteMessage){
+    final Handler handler = new Handler(Looper.getMainLooper());
+    handler.postDelayed(new Runnable() {
+      @Override
+      public void run() {
+        sendRemoteMessage(ctx, remoteMessage);
+      }
+    }, 2000);
+
+    Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getApplicationContext().getPackageName());
+    if (launchIntent != null) {
+      startActivity(launchIntent);//null pointer check in case package name was not found
+    }
+  }
+
+  private void sendRemoteMessage(Context ctx, RemoteMessage remoteMessage){
+    Intent intent = new Intent(ACTION_REMOTE_MESSAGE);
+    intent.putExtra(EXTRA_REMOTE_MESSAGE, remoteMessage);
+    LocalBroadcastManager.getInstance(ctx).sendBroadcast(intent);
+  }
+
+  private boolean isInComingCallNotification(RemoteMessage remoteMessage){
+    Map<String,String> map = remoteMessage.getData();
+    if (map != null){
+      String conversationId = map.get("ConversationID");
+      String senderId = map.get("SenderID");
+      String bodyTypeId = map.get("TypeID");
+      return isNotEmpty(conversationId) && isNotEmpty(senderId) && isNotEmpty(bodyTypeId) && bodyTypeId.equals(TYPE_CALL_INCOMING);
+    }
+//    if(conversationID.isNotEmpty && senderID.isNotEmpty && bodyTypeID == MessageTypeID.TypeCallIncoming)
+    return false;
+  }
+
+  private static final String TYPE_CALL_INCOMING = "6525c531-937a-4533-8408-3f67118c2d13";
+  private boolean isNotEmpty(String txt){
+    return (txt != null && !txt.isEmpty());
   }
 }
